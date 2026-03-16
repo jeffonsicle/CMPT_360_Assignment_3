@@ -59,6 +59,10 @@ bool parse_args(int argc, char **argv, sim_opts_t *o) {
                 fprintf(stderr, "Error: --base must be a valid integer\n");
                 return false;
             }
+            if (o->base <= 0) {
+                fprintf(stderr, "Error: --base must be greater than 0\n");
+                return false;
+            }
         }
         // Parse --limit=... (checks if the string is a limit, if it is move to the end of the string and convert the integer value into a long integer, otherwise print an error message)
         else if (strncmp(arg, "--limit=", 8) == 0) {
@@ -66,6 +70,10 @@ bool parse_args(int argc, char **argv, sim_opts_t *o) {
             o->limit = strtol(arg + 8, &endptr, 10);
             if (*endptr != '\0') {
                 fprintf(stderr, "Error: --limit must be a valid integer\n");
+                return false;
+            }
+            if (o->limit <= 0) {
+                fprintf(stderr, "Error: --limit must be greater than 0\n");
                 return false;
             }
         }
