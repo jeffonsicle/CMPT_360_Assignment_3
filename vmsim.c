@@ -201,42 +201,185 @@ int run_bb(const sim_opts_t *o, stats_t *st) {
 
 //seg
 int run_seg(const sim_opts_t *o, stats_t *st) {
+    seg_table_t table;
+    table.nsegs = 0;
     (void)o; (void)st;
-
-    // Open the trace file for reading, if it cannot be opened print an error message and return 1
-    FILE *fp = fopen(o->trace_path, "r");
-    if (!fp) {
-        fprintf(stderr, "Error: cannot open trace file '%s': %s\n", o->trace_path, strerror(errno));
-        return 1;
-    }
-    
-    // Read the trace file line by line, skipping comment lines (lines starting with #) and empty lines, and print each non-comment line to standard output
-    char line[256];
-    while (fgets(line, sizeof(line), fp)) {
-        // Skip comment lines (lines starting with #)
-        if (line[0] == '#' || line[0] == '\n') continue;
-        printf("%s", line);
-    }
-    fclose(fp);
-
-    printf("----\n");
+    int run = 0;
+    int code = 0;
+    int stack = 0;
+    int heap = 0;
 
     // Open the config file for reading, if it cannot be opened print an error message and return 1
-    fp = fopen(o->config_path, "r");
+    FILE *fp = fopen(o->config_path, "r");
     if (!fp) {
         fprintf(stderr, "Error: cannot open config file '%s': %s\n", o->config_path, strerror(errno));
         return 1;
     }
     
     // Read the config file line by line, skipping comment lines (lines starting with #) and empty lines, and print each non-comment line to standard output
+    char line[256];
     while (fgets(line, sizeof(line), fp)) {
         // Skip comment lines (lines starting with #)
         if (line[0] == '#' || line[0] == '\n') continue;
-        printf("%s", line);
+
+        run++;
+        segment_t *s = &table.segs[table.nsegs];
+        //these variables will hold the operations from the config file
+        char *name = strtok(line, " \t\n");
+        char *base = strtok(NULL, " \t\n");
+        char *limit = strtok(NULL, " \t\n");
+        char *permissions = strtok(NULL, " \t\n");
+        char *extra = strtok(NULL, " \t\n");
+
+        //check if any of the required fields are missing, and if they are print an error message and continue to the next line
+        if(name == NULL || base == NULL || limit == NULL || permissions == NULL || name[0] == '#' || base[0] == '#' || limit[0] == '#' || permissions[0] == '#')
+        {
+            printf("Config: '%s':%d: malformed: expected 'NAME BASE LIMIT PERMISSIONS'\n", o->config_path, run);
+            
+            continue;
+        }
+
+        //check to see if the base and the limit are valid integers, if they are not print an error message and continue to the next line
+        char *endptr;
+        long base_val = strtol(base, &endptr, 10);
+        if (*endptr != '\0') 
+        {
+            printf("Config: '%s':%d: bad base '%s' (not decimal)\n", o->config_path, run, base);
+            continue;
+        }
+        long limit_val = strtol(limit, &endptr, 10);
+        if (*endptr != '\0') 
+        {
+            printf("Config: '%s':%d: bad limit '%s' (not decimal)\n", o->config_path, run, limit);
+            continue;
+        }
+
+        strcpy(s->name, name);
+        s->base = base_val;
+        s->limit = limit_val;
+        strcpy(s->perms, permissions);
+        s->in_use = true;
+        s->hits = 0;
+
+        table.nsegs++;
     }
-    
     fclose(fp);
-    return 0;
+
+    // Open the config file for reading, if it cannot be opened print an error message and return 1
+    FILE *fp2 = fopen(o->trace_path, "r");
+    if (!fp2) {
+        fprintf(stderr, "Error: cannot open trace file '%s': %s\n", o->trace_path, strerror(errno));
+        return 1;
+    }
+
+    run = 0;
+    while (fgets(line, sizeof(line), fp2))
+    {
+        // Skip comment lines (lines starting with #)
+        if (line[0] == '#' || line[0] == '\n') continue;
+
+        run++;
+
+        //these variables will hold the operations from the trace file
+        char *op = strtok(line, " \t\n");
+        char *segname = strtok(NULL, " \t\n");
+        char *offset = strtok(NULL, " \t\n");
+        char *extra = strtok(NULL, " \t\n");
+
+        //check if any of the required fields are missing, and if they are print an error message and continue to the next line
+        if(op == NULL || segname == NULL || offset == NULL || op[0] == '#' || segname[0] == '#' || offset[0] == '#')
+        {
+            printf("Trace: '%s':%d: malformed: expected 'OP SEGNAME OFFSET'\n", o->trace_path, run);
+            continue;
+        }
+        
+        //check to see if the offset is a valid integer, if it is not print an error message and continue to the next line
+        char *endptr2;
+        long offset_val = strtol(offset, &endptr2, 10);
+        if (*endptr2 != '\0')
+        {
+            printf("Trace: '%s':%d: bad offset '%s' (not decimal)\n", o->trace_path, run, offset);
+            continue;
+        }
+
+        if(offset_val < 0)
+        {
+            printf("%s %s %ld -> malformed: expected 'OP SEG OFFSET' (non-negative raw offset)\n", op, segname, offset_val);
+            continue;
+        }
+
+        int found = 0;
+
+        for (size_t i = 0; i < table.nsegs; i++)
+        {
+            char upper_perms[32];
+            char upper_op[32];
+
+            make_uppercase_copy(upper_perms, table.segs[i].perms);
+            make_uppercase_copy(upper_op, op);
+            if (strcmp(table.segs[i].name, segname) == 0)
+            {
+                found = 1;
+
+                if (!perms_allow(upper_perms, upper_op))
+                {
+                    printf("%s %s %ld -> fault: PERM\n", op, segname, offset_val);
+                    st->accesses++;
+                    st->faults_prot++;
+                }
+                    else if (offset_val >= table.segs[i].limit)
+                    {
+                        printf("%s %s %ld -> fault: BOUNDS\n", op, segname, offset_val);
+                        st->accesses++;
+                        st->faults_bounds++;
+                    }
+                    else
+                    {
+                        long pa = table.segs[i].base - (table.segs[i].limit - offset_val);
+                        printf("%s %s %ld -> PA %ld : ok\n", op, segname, offset_val, pa);
+                        st->accesses++;
+                        st->ok++;
+                        if(strcmp(table.segs[i].name, "code") == 0) code++;
+                        else if(strcmp(table.segs[i].name, "stack") == 0) stack++;
+                        else if(strcmp(table.segs[i].name, "heap") == 0) heap++;
+                        table.segs[i].hits++;
+                    }
+
+                    break;
+            }
+        }
+
+        if (!found)
+        {
+            printf("%s %s %ld -> fault: NOSEG\n", op, segname, offset_val);
+            st->accesses++;
+            st->faults_noseg++;
+        }
+    }
+
+    printf("== stats ==\n");
+    printf("accesses=%lu, ok=%lu, faults.bounds=%lu\n", st->accesses, st->ok, st->faults_bounds);
+    printf("faults.prot=%lu, faults.noseg=%lu\n", st->faults_prot, st->faults_noseg);
+    printf("seg hits: code=%lu, heap=%lu, stack=%lu\n", code, heap, stack);
+}
+
+void make_uppercase_copy(char *dest, const char *src) {
+    size_t i = 0;
+    while (src[i] != '\0') {
+        dest[i] = toupper((unsigned char)src[i]);
+        i++;
+    }
+    dest[i] = '\0';
+}
+
+int perms_allow(const char *config_perms, const char *trace_op) {
+
+    for (size_t i = 0; trace_op[i] != '\0'; i++) {
+        if (strchr(config_perms, trace_op[i]) == NULL) {
+            return 0;   // missing one required permission
+        }
+    }
+    return 1;           // all required permissions are present
 }
 
 //main()
