@@ -1,10 +1,3 @@
-/* ID Header:
- Student Name: Jeffrey Moniz
- Student ID: 3148591
- Submission Date: 
- File: 
-*/
-
 #include "vmsim.h"
 #include <stdio.h>
 #include <stdlib.h>
